@@ -1,0 +1,382 @@
+esphome:
+  name: cheese-controleur
+  friendly_name: cheese_controleur
+
+esp32:
+  #platform = espressif32
+  board: lolin_s2_mini
+  framework:
+    #type: arduino
+    type: esp-idf
+
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: "ABCD"
+    
+time:
+  - platform: homeassistant
+    id: esptime
+
+ota:
+  - platform: esphome
+    password: "ABCD"
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+
+  # Enable fallback hotspot (captive portal) in case wifi connection fails
+  ap:
+    ssid: "Cheese-Controleur"
+    password: "ABCD"
+
+captive_portal:
+
+
+i2c:
+  sda: GPIO1
+  scl: GPIO2
+
+one_wire:
+  - platform: gpio
+    pin: GPIO8
+
+globals:
+  - id: screen_on
+    type: bool
+    restore_value: no
+    initial_value: "true"
+
+  - id: last_motion_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+    
+font:
+  - file: "gfonts://Roboto"
+    id: font_small
+    size: 12
+
+  - file: "gfonts://Roboto"
+    id: font_medium
+    size: 14
+
+  - file: "gfonts://Roboto"
+    id: font_tiny
+    size: 10
+
+
+
+number:
+  - platform: template
+    name: "Consigne maturation"
+    id: setpoint
+    optimistic: true
+    min_value: 4
+    max_value: 20
+    step: 0.1
+    initial_value: 12.0
+
+  - platform: template
+    name: "Marge alerte"
+    id: alarm_band
+    optimistic: true
+    min_value: 0.2
+    max_value: 3.0
+    step: 0.1
+    initial_value: 1.0
+
+  - platform: template
+    name: "Screen Timeout (minutes)"
+    id: screen_timeout_min
+    optimistic: true
+    restore_value: true
+    min_value: 1
+    max_value: 30
+    step: 1
+    initial_value: 5
+
+output:
+  - platform: ledc
+    pin: GPIO40
+    id: out_red
+    frequency: 1000 Hz
+    inverted: true
+
+  - platform: ledc
+    pin: GPIO38
+    id: out_green
+    frequency: 1000 Hz
+    inverted: true
+
+  - platform: ledc
+    pin: GPIO36
+    id: out_blue
+    frequency: 1000 Hz
+    inverted: true
+
+  - platform: gpio
+    id: relay1_out
+    pin: GPIO34
+    inverted: true
+
+  - platform: gpio
+    id: relay2_out
+    pin: GPIO21
+    inverted: true
+
+
+
+display:
+  - platform: ssd1306_i2c
+    id: oled
+    model: "SSD1306 128x64"
+    address: 0x3C
+    lambda: |-
+      if (!id(screen_on)) {
+        it.fill(COLOR_OFF);
+        return;
+      }
+
+      it.printf(0, 0, id(font_medium), "Air  : %.1fC", id(cheese_room_temp).state);
+      it.printf(0, 14, id(font_medium), "Hum  : %.0f%%", id(cheese_room_hum).state);
+      it.printf(0, 28, id(font_medium), "Probe: %.1fC", id(cheese_probe_temp).state);
+      it.strftime(0, 62, id(font_small), TextAlign::BASELINE_LEFT, "%H:%M", id(esptime).now());
+      it.printf(0, 42, id(font_tiny), "Pwr: %.0fW", id(freezer_power_w).state);
+
+sensor:
+  - platform: dht
+    pin: GPIO6
+    model: DHT22
+    temperature:
+      name: "Cheese Room Temperature"
+      id: cheese_room_temp
+      filters:
+        - lambda: if (isnan(x)) return {}; else return x;
+    humidity:
+      name: "Cheese Room Humidity"
+      id: cheese_room_hum
+      filters:
+        - lambda: if (isnan(x)) return {}; else return x;
+    update_interval: 60s
+  - platform: dallas_temp
+    name: "Cheese Probe Temperature"
+    id: cheese_probe_temp
+    update_interval: 30s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 4
+          send_every: 1
+  - platform: adc
+    pin: GPIO10
+    id: adc_ct
+    attenuation: 11db
+    update_interval: 1s
+
+  - platform: ct_clamp
+    sensor: adc_ct
+    name: "Freezer Current"
+    id: freezer_current
+    sample_duration: 200ms
+    update_interval: 1s
+    filters:
+      - calibrate_linear:
+          - 0.000 -> 0.000
+          - 0.070 -> 2.00
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "Freezer Power (Estimated)"
+    id: freezer_power_w
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      const float V = 120.0;
+      return id(freezer_current).state * V;
+
+  - platform: total_daily_energy
+    name: "Freezer Energy Daily"
+    power_id: freezer_power_w
+    unit_of_measurement: "kWh"
+    device_class: energy
+    state_class: total_increasing
+    accuracy_decimals: 3
+
+  - platform: integration
+    name: "Freezer Energy Total"
+    id: freezer_energy_total
+    sensor: freezer_power_w
+    time_unit: h
+    unit_of_measurement: "kWh"
+    accuracy_decimals: 3
+    device_class: energy
+    state_class: total_increasing
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO4
+      mode: INPUT_PULLDOWN
+    name: "Cheese PIR"
+    device_class: motion
+    id: pir_motion
+    filters:
+      - delayed_on: 50ms
+    on_press:
+      then:
+        - lambda: |-
+            id(screen_on) = true;
+            id(last_motion_ms) = millis();
+        - component.update: oled
+
+  - platform: template
+    name: "Freezer Current Active"
+    id: freezer_current_active
+    lambda: |-
+      return id(freezer_current).state > 0.25;
+    filters:
+      - delayed_on: 2s
+      - delayed_off: 10s
+
+  - platform: template
+    name: "Freezer Fault (Relay ON No Current)"
+    id: freezer_fault_no_current
+    lambda: |-
+      return id(relay_freezer).state && !id(freezer_current_active).state;
+    filters:
+      - delayed_on: 60s
+      - delayed_off: 5s
+
+  
+
+light:
+  - platform: rgb
+    name: "Cheese Status LED"
+    id: status_led
+    red: out_red
+    green: out_green
+    blue: out_blue
+    restore_mode: ALWAYS_OFF
+    effects:
+      - pulse:
+          name: "Pulse"
+          transition_length: 1s
+          update_interval: 1s
+      - strobe:
+          name: "Strobe"
+          colors:
+            - state: true
+              brightness: 100%
+              duration: 300ms
+            - state: false
+              duration: 300ms
+      - random:
+          name: "Rainbow"
+          transition_length: 800ms
+          update_interval: 800ms
+
+interval:
+  - interval: 5s
+    then:
+      - lambda: |-
+          if (!id(led_enabled).state) {
+            id(status_led).turn_off().perform();
+            return;
+          }
+          const float t = id(cheese_probe_temp).state;
+          if (isnan(t)) return;
+
+          const float sp   = id(setpoint).state;
+          const float band = id(alarm_band).state;
+
+          const bool too_hot  = t > (sp + band);
+          const bool too_cold = t < (sp - band);
+          const bool cooling = id(relay_freezer).state;  // état réel du relais
+          if (id(freezer_fault_no_current).state) {
+            auto c = id(status_led).turn_on();
+            c.set_rgb(1.0, 0.0, 1.0);   // violet
+            c.set_brightness(1.0);
+            c.set_effect("Strobe");
+            c.perform();
+            return;
+          }
+          // 🔴 Trop chaud → rouge strobe
+          if (too_hot) {
+            auto c = id(status_led).turn_on();
+            c.set_rgb(1.0, 0.0, 0.0);
+            c.set_brightness(1.0);
+            c.set_effect("Strobe");
+            c.perform();
+            return;
+          }
+
+          // 🔵 Trop froid → bleu strobe
+          if (too_cold) {
+            auto c = id(status_led).turn_on();
+            c.set_rgb(0.0, 0.0, 1.0);
+            c.set_brightness(1.0);
+            c.set_effect("Strobe");
+            c.perform();
+            return;
+          }
+
+          // 💠 En route → cyan pulse
+          if (cooling) {
+            auto c = id(status_led).turn_on();
+            c.set_rgb(0.0, 1.0, 1.0);
+            c.set_brightness(0.6);
+            c.set_effect("Pulse");
+            c.perform();
+            return;
+          }
+
+          // 🌈 OK / stable → arc-en-ciel doux
+          auto c = id(status_led).turn_on();
+          c.set_brightness(0.4);
+          c.set_effect("Rainbow");
+          c.perform();
+
+  - interval: 1s
+    then:
+      - lambda: |-
+          // Timeout en ms (minutes -> ms)
+          const uint32_t timeout_ms = (uint32_t)(id(screen_timeout_min).state * 60.0f * 1000.0f);
+
+          // Si on n'a jamais eu de mouvement, on ne fait rien
+          if (id(last_motion_ms) == 0) return;
+
+          // Si écran ON et délai dépassé -> OFF
+          if (id(screen_on) && (millis() - id(last_motion_ms) > timeout_ms)) {
+            id(screen_on) = false;
+            id(last_motion_ms) = 0;  // optionnel: reset
+            id(oled).update();
+          }
+
+switch:
+  - platform: template
+    name: "Enable Status LED"
+    id: led_enabled
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+
+  - platform: output
+    name: "Relay 1 (Freezer)"
+    id: relay_freezer
+    output: relay1_out
+    restore_mode: ALWAYS_OFF
+
+  - platform: output
+    name: "Relay 2"
+    id: relay_2
+    output: relay2_out
+    restore_mode: ALWAYS_OFF
