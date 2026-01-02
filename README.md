@@ -1,233 +1,149 @@
-🧀 Cheese-Controleur
+# 🧀 Cheese Chamber Controller (ESPHome + ESP32-S2)
 
-ESP32-based Temperature & Energy Controller for Cheese Aging (Cheese Cave / Modified Freezer)
+This project is a **DIY cheese aging chamber controller** built with **ESPHome** and an **ESP32-S2 Mini**.  
+It controls **temperature** and **humidity** independently using two relays, while monitoring **power consumption** of the freezer with a current clamp.
 
-📌 Overview
+The system is designed to be:
+- Stable (anti relay chatter)
+- Adjustable from Home Assistant (sliders / helpers)
+- Safe for compressors and ultrasonic humidifiers
+- Fully autonomous (interval-based logic, no cloud dependency)
 
-Cheese-Controleur is a DIY controller designed to convert a standard freezer into a cheese aging chamber (cheese cave).
-It monitors temperature, humidity, energy consumption, controls the freezer via relay, and provides visual feedback using an OLED display and an RGB status LED.
+---
 
-The project is built using:
+## ✨ Features
 
-ESP32-S2 Mini (LOLIN S2 Mini)
+### 🌡 Temperature Control (Relay 1 – Freezer)
+- Uses **cheese probe temperature** (Dallas DS18B20)
+- Adjustable **temperature setpoint** and **hysteresis band**
+- Minimum ON/OFF time to protect the compressor
+- Startup delay to prevent relay toggling at boot
+- Status shown on LCD
 
-ESPHome
+### 💧 Humidity Control (Relay 2 – Ultrasonic Humidifier)
+- Uses **ambient humidity** (DHT22)
+- Adjustable **humidity setpoint** and **band**
+- Relay drives a **simple ultrasonic mist maker**
+- Minimum ON/OFF cycle time (anti rapid switching)
+- Status shown on LCD
 
-Home Assistant integration
+### ⚡ Power Monitoring
+- SCT-030 current clamp on freezer line
+- ADC-based current measurement
+- Adjustable gain & offset (no recompilation needed)
+- Power below 500W is ignored (noise filtering)
+- Daily and total energy tracking
 
-It is designed to be:
+### 🖥 LCD Display (20x4 I2C)
+Displays:
+- Air temperature & humidity
+- Cheese probe temperature & setpoint
+- Relay states (R1 / R2) with modes (COOL / HUM / IDLE)
+- Humidity setpoint and current time
+- Backlight controlled by PIR + timeout
 
-Reliable
+### 🏃 Motion Detection
+- PIR sensor turns LCD backlight ON
+- Backlight turns OFF automatically after timeout
 
-Safe for compressors
+---
 
-Fully observable (temperature + power + faults)
+## 🧠 Control Logic Overview
 
-✨ Features
-🌡 Environmental Monitoring
+### Temperature (Relay 1 – Freezer)
 
-Air temperature & humidity (DHT22 / AM2302)
+ON  → Probe temp > (setpoint + band)
+OFF → Probe temp < (setpoint - band)
 
-Product temperature via probe (DS18B20 on bottle of water)
 
-OLED display with live values
+Minimum relay cycle time enforced
 
-❄ Freezer Control
+Boot inhibit delay (10s)
 
-Relay-controlled freezer power
+Humidity (Relay 2 – Ultrasonic Mist Maker)
+ON  → Humidity < (humidity_setpoint - band)
+OFF → Humidity > (humidity_setpoint + band)
 
-Designed for external thermostat logic (ESPHome / Home Assistant)
 
-Fault detection (relay ON but no current)
+Designed for simple ON/OFF ultrasonic humidifiers
 
-⚡ Energy Monitoring
+Minimum relay cycle time enforced
 
-Current measurement using SCT-013-030 current clamp
+Boot inhibit delay (10s)
 
-Estimated power (W)
-
-Daily energy consumption (kWh/day)
-
-Total cumulative energy (kWh)
-
-🚨 Safety & Alerts
-
-Detects when the freezer is commanded ON but draws no current
-
-Visual fault indication (purple strobe LED)
-
-Ready for Home Assistant notifications
-
-💡 Visual Feedback
-
-RGB LED status meanings:
-
-🔴 Red strobe → Too hot
-
-🔵 Blue strobe → Too cold
-
-💠 Cyan pulse → Cooling (relay ON)
-
-🌈 Rainbow → Stable
-
-🟣 Purple strobe → Fault (relay ON, no current)
-
-🖥 User Interaction
-
-PIR motion sensor turns OLED screen ON
-
-Configurable screen timeout
-
-Live clock display
-
-🧱 Hardware Used
-Core Components
-
-ESP32-S2 Mini (LOLIN S2 Mini)
-
-SSD1306 OLED (128×64, I²C)
-
-DHT22 / AM2302 (air temperature & humidity)
-
-DS18B20 (probe temperature)
-
-SCT-013-030 (30A / 1V) current clamp
-
-2-Channel Relay Module (5V, optocoupled, LOW-level trigger)
-
-RGB LED (common anode)
-
-PIR Motion Sensor (HC-SR501 or similar)
-
-🔌 Electrical Wiring Summary
-Power
-
-ESP32 powered via VBUS (5V)
-
-Shared 5V supply for relays and ESP32
-
-Common ground across all components
-
-Sensors
-Sensor	Connection
+🧰 Hardware Used
+Component	Description
+ESP32-S2 Mini (LOLIN)	Main controller
+DS18B20	Cheese probe temperature
+DHT22	Air temperature & humidity
+SCT-030	Current clamp for freezer
+Relay Module (2-channel)	Relay 1: freezer / Relay 2: humidifier
+Ultrasonic Mist Maker	Simple ON/OFF humidifier
+LCD 20x4 + PCF8574	I2C display
+PIR Sensor	Motion detection
+5V Power Supply	ESP32 + relay power
+🔌 Wiring Overview
+ESP32-S2 Pin Assignment
+Function	GPIO
+I2C SDA	GPIO2
+I2C SCL	GPIO1
+LCD (PCF8574)	I2C
+DS18B20	GPIO8
 DHT22	GPIO6
-DS18B20	GPIO8 (OneWire)
 PIR	GPIO4
-SCT-013-030	GPIO10 (ADC)
-OLED (I²C)
-Signal	GPIO
-SDA	GPIO1
-SCL	GPIO2
-Relays
-Relay	GPIO
-Freezer Relay	GPIO34
-Auxiliary Relay	GPIO21
+Relay 1 (Freezer)	GPIO34
+Relay 2 (Humidifier)	GPIO21
+CT Clamp (ADC)	GPIO10
 
-⚠ Relays are inverted (LOW = ON) for compatibility with optocoupled modules.
+⚠️ Safety Note
 
-RGB LED (PWM)
-Color	GPIO
-Red	GPIO40
-Green	GPIO38
-Blue	GPIO36
-🔧 SCT-013-030 Current Clamp Wiring
+The SCT-030 clamp is non-invasive, safe for measurement
+Relays must be properly rated for mains voltage
 
-The SCT-013-030 outputs an AC voltage (~1V max) and must be biased for ESP32 ADC input.
+Ultrasonic mist maker is switched on the AC side via relay, not powered directly by ESP32
 
-Required Bias Circuit
+🖥 Home Assistant Integration
+All key parameters are exposed as sliders:
+Temperature setpoint
+Temperature band
+Humidity setpoint
+Humidity band
+Minimum relay cycle time
+CT calibration (gain / offset)
+No recompilation is needed to tune the system.
 
-Voltage divider: 2 × 100kΩ (3.3V → midpoint → GND)
-
-Offset voltage: ~1.65V
-
-Capacitors:
-
-10µF (stability)
-
-100nF (noise filtering)
-
-Notes
-
-Clamp must be placed on ONE conductor only (HOT wire)
-
-Never connect/disconnect the clamp under load
-
-Short wires recommended to reduce noise
-
-🧠 Software Architecture
-Firmware
-
-ESPHome
-
-Framework: ESP-IDF
-
-OTA updates enabled
-
-Home Assistant API enabled
-
-Main Logic
-
-Read sensors (temperature, humidity, current)
-
-Compute estimated power and energy
-
-Detect faults (relay ON + no current)
-
-Update OLED display
-
-Drive RGB LED based on system state
-
-Expose all entities to Home Assistant
-
-📈 Home Assistant Integration
-
-All sensors, switches, and energy entities are automatically exposed to Home Assistant:
-
-Power & energy usable in Energy Dashboard
-
-Fault sensors usable for notifications
-
-Setpoints adjustable from UI
-
-🚀 Setup Steps
-
-Assemble hardware and wiring
-
-Install ESPHome
-
-Flash ESP32 with provided YAML
-
+🚀 Installation Steps
+Flash ESP32-S2 with ESPHome
+Connect sensors, relays, and LCD
 Add device to Home Assistant
+Adjust setpoints and bands
+Let the chamber stabilize for 24–48 hours
+Fine-tune humidity & temperature cycles
 
-Calibrate SCT-013-030 using a known resistive load
+🧀 Designed For
+Cheese aging (raclette, tomme, reblochon, etc.)
+Controlled curing environments
+DIY food fermentation chambers
 
-Configure automations / thermostat logic (optional)
+📌 Notes & Future Improvements
+Add fan control (air circulation)
+Add humidity exhaust / dehumidifier
+Add alarms (relay ON but no power draw)
+Optional ESPHome climate entities for UI abstraction
 
-⚠ Calibration (Important)
+⚠️ Disclaimer
 
-The SCT-013 calibration values are placeholders.
+This project controls mains voltage equipment.
+You are responsible for ensuring:
+Proper electrical isolation
+Safe wiring practices
+Compliance with local electrical codes
 
-To calibrate:
+❤️ Credits
+Built with:
+ESPHome
+Home Assistant
 
-Connect a known load (e.g. 1500W heater)
+Open-source hardware & software
 
-Measure real current (A = W / 120V)
-
-Adjust calibrate_linear values in ESPHome
-
-🛣 Future Improvements
-
-True thermostat with anti-short-cycle protection
-
-Compressor minimum OFF time
-
-Voltage measurement for real power (PF-aware)
-
-Web UI status page
-
-Data logging to InfluxDB / Grafana
-
-📜 License
-
-This project is open-source and provided as-is for educational and DIY use.
-Use at your own risk when working with mains voltage.
+Enjoy your cheese! 🧀
