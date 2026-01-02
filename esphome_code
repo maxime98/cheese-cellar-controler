@@ -1,96 +1,230 @@
 esphome:
   name: cheese-controleur
   friendly_name: cheese_controleur
+  on_boot:
+    priority: 200
+    then:
+      - lambda: |-
+          // Inhibe toute commutation des relais pendant 10s après boot
+          id(inhibit_until_ms) = millis() + 10000;
+      - binary_sensor.template.publish:
+          id: lcd_backlight_state
+          state: ON
 
 esp32:
-  #platform = espressif32
   board: lolin_s2_mini
   framework:
-    #type: arduino
     type: esp-idf
 
-
-# Enable logging
 logger:
 
-# Enable Home Assistant API
 api:
   encryption:
-    key: "ABCD"
-    
+    key: "dGGqosLqZi3WxY8iEa6ojL+ZyvUq9MW4nUgOfO/DiH8="
+
 time:
   - platform: homeassistant
     id: esptime
 
 ota:
   - platform: esphome
-    password: "ABCD"
+    password: "7a19002914a4586874c5f57efb4544d6"
 
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: "Cheese-Controleur"
-    password: "ABCD"
+    password: "biPJgp1KeqBd"
 
 captive_portal:
 
-
 i2c:
-  sda: GPIO1
-  scl: GPIO2
+  sda: GPIO2
+  scl: GPIO1
 
 one_wire:
   - platform: gpio
     pin: GPIO8
 
-globals:
-  - id: screen_on
-    type: bool
-    restore_value: no
-    initial_value: "true"
-
-  - id: last_motion_ms
-    type: uint32_t
-    restore_value: no
-    initial_value: "0"
-    
 font:
   - file: "gfonts://Roboto"
     id: font_small
     size: 12
-
   - file: "gfonts://Roboto"
     id: font_medium
     size: 14
-
   - file: "gfonts://Roboto"
     id: font_tiny
     size: 10
 
+globals:
+  - id: inhibit_until_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
 
+  - id: r1_last_change_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  - id: r1_on_start_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  - id: r2_last_change_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  - id: r2_on_start_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
 
 number:
+  # ---- TEMP (Probe) ----
   - platform: template
-    name: "Consigne maturation"
+    name: "Temp Setpoint (Probe)"
     id: setpoint
     optimistic: true
+    restore_value: true
     min_value: 4
     max_value: 20
     step: 0.1
     initial_value: 12.0
 
   - platform: template
-    name: "Marge alerte"
+    name: "Temp Band (Probe)"
     id: alarm_band
     optimistic: true
+    restore_value: true
     min_value: 0.2
     max_value: 3.0
     step: 0.1
-    initial_value: 1.0
+    initial_value: 0.5
 
+  # Seuil "loin/proche" par rapport à la consigne (probe)
+  # Si probe > sp + temp_far_delta => mode FAR, sinon NEAR
+  - platform: template
+    name: "Temp FAR delta (°C)"
+    id: temp_far_delta
+    optimistic: true
+    restore_value: true
+    min_value: 0.5
+    max_value: 8.0
+    step: 0.1
+    initial_value: 2.0
+    unit_of_measurement: "°C"
+
+  # Coupe sécurité sur l’air: air < (sp - air_safety_delta) => OFF immédiat
+  # Ex: sp=12 et delta=7 => cut à 5°C
+  - platform: template
+    name: "Air safety delta (°C)"
+    id: air_safety_delta
+    optimistic: true
+    restore_value: true
+    min_value: 0
+    max_value: 15
+    step: 0.1
+    initial_value: 7.0
+    unit_of_measurement: "°C"
+
+  # Timings FAR (loin)
+  - platform: template
+    name: "R1 FAR Max ON (sec)"
+    id: r1_far_max_on_sec
+    optimistic: true
+    restore_value: true
+    min_value: 10
+    max_value: 600
+    step: 10
+    initial_value: 180
+    unit_of_measurement: "s"
+
+  - platform: template
+    name: "R1 FAR Min OFF (sec)"
+    id: r1_far_min_off_sec
+    optimistic: true
+    restore_value: true
+    min_value: 60
+    max_value: 7200
+    step: 30
+    initial_value: 600
+    unit_of_measurement: "s"
+
+  # Timings NEAR (proche)
+  - platform: template
+    name: "R1 NEAR Max ON (sec)"
+    id: r1_near_max_on_sec
+    optimistic: true
+    restore_value: true
+    min_value: 10
+    max_value: 300
+    step: 5
+    initial_value: 60
+    unit_of_measurement: "s"
+
+  - platform: template
+    name: "R1 NEAR Min OFF (sec)"
+    id: r1_near_min_off_sec
+    optimistic: true
+    restore_value: true
+    min_value: 120
+    max_value: 7200
+    step: 60
+    initial_value: 1800
+    unit_of_measurement: "s"
+
+  # ---- HUMIDITY ----
+  - platform: template
+    name: "Humidity Setpoint"
+    id: humidity_setpoint
+    optimistic: true
+    restore_value: true
+    min_value: 40
+    max_value: 95
+    step: 1
+    initial_value: 85
+    unit_of_measurement: "%"
+
+  - platform: template
+    name: "Humidity Band"
+    id: humidity_band
+    optimistic: true
+    restore_value: true
+    min_value: 1
+    max_value: 15
+    step: 1
+    initial_value: 3
+    unit_of_measurement: "%"
+
+  # (tu as demandé 5 min max + 10 min mini: default ici)
+  - platform: template
+    name: "R2 Max ON (sec)"
+    id: r2_max_on_sec
+    optimistic: true
+    restore_value: true
+    min_value: 30
+    max_value: 600
+    step: 10
+    initial_value: 300
+    unit_of_measurement: "s"
+
+  - platform: template
+    name: "R2 Min OFF (sec)"
+    id: r2_min_off_sec
+    optimistic: true
+    restore_value: true
+    min_value: 60
+    max_value: 7200
+    step: 60
+    initial_value: 600
+    unit_of_measurement: "s"
+
+  # ---- LCD backlight timeout ----
   - platform: template
     name: "Screen Timeout (minutes)"
     id: screen_timeout_min
@@ -100,26 +234,37 @@ number:
     max_value: 30
     step: 1
     initial_value: 5
+    on_value:
+      then:
+        - binary_sensor.template.publish:
+            id: lcd_backlight_state
+            state: ON
+
+  # ---- Calibration CT ----
+  - platform: template
+    name: "CT Gain"
+    id: ct_gain
+    optimistic: true
+    restore_value: true
+    min_value: 0.1
+    max_value: 200.0
+    step: 0.1
+    initial_value: 1.0
+    unit_of_measurement: "x"
+
+  - platform: template
+    name: "CT Offset"
+    id: ct_offset
+    optimistic: true
+    restore_value: true
+    min_value: -5.0
+    max_value: 5.0
+    step: 0.01
+    initial_value: 0.0
+    unit_of_measurement: "A"
 
 output:
-  - platform: ledc
-    pin: GPIO40
-    id: out_red
-    frequency: 1000 Hz
-    inverted: true
-
-  - platform: ledc
-    pin: GPIO38
-    id: out_green
-    frequency: 1000 Hz
-    inverted: true
-
-  - platform: ledc
-    pin: GPIO36
-    id: out_blue
-    frequency: 1000 Hz
-    inverted: true
-
+  # Relais
   - platform: gpio
     id: relay1_out
     pin: GPIO34
@@ -130,134 +275,35 @@ output:
     pin: GPIO21
     inverted: true
 
+  # LED RGB (une seule)
+  - platform: ledc
+    pin: GPIO40
+    id: out_red
+    frequency: 1000 Hz
+    inverted: true
+  - platform: ledc
+    pin: GPIO38
+    id: out_green
+    frequency: 1000 Hz
+    inverted: true
+  - platform: ledc
+    pin: GPIO36
+    id: out_blue
+    frequency: 1000 Hz
+    inverted: true
 
+switch:
+  - platform: output
+    name: "Relay 1 (Freezer)"
+    id: relay_freezer
+    output: relay1_out
+    restore_mode: ALWAYS_OFF
 
-display:
-  - platform: ssd1306_i2c
-    id: oled
-    model: "SSD1306 128x64"
-    address: 0x3C
-    lambda: |-
-      if (!id(screen_on)) {
-        it.fill(COLOR_OFF);
-        return;
-      }
-
-      it.printf(0, 0, id(font_medium), "Air  : %.1fC", id(cheese_room_temp).state);
-      it.printf(0, 14, id(font_medium), "Hum  : %.0f%%", id(cheese_room_hum).state);
-      it.printf(0, 28, id(font_medium), "Probe: %.1fC", id(cheese_probe_temp).state);
-      it.strftime(0, 62, id(font_small), TextAlign::BASELINE_LEFT, "%H:%M", id(esptime).now());
-      it.printf(0, 42, id(font_tiny), "Pwr: %.0fW", id(freezer_power_w).state);
-
-sensor:
-  - platform: dht
-    pin: GPIO6
-    model: DHT22
-    temperature:
-      name: "Cheese Room Temperature"
-      id: cheese_room_temp
-      filters:
-        - lambda: if (isnan(x)) return {}; else return x;
-    humidity:
-      name: "Cheese Room Humidity"
-      id: cheese_room_hum
-      filters:
-        - lambda: if (isnan(x)) return {}; else return x;
-    update_interval: 60s
-  - platform: dallas_temp
-    name: "Cheese Probe Temperature"
-    id: cheese_probe_temp
-    update_interval: 30s
-    filters:
-      - sliding_window_moving_average:
-          window_size: 4
-          send_every: 1
-  - platform: adc
-    pin: GPIO10
-    id: adc_ct
-    attenuation: 11db
-    update_interval: 1s
-
-  - platform: ct_clamp
-    sensor: adc_ct
-    name: "Freezer Current"
-    id: freezer_current
-    sample_duration: 200ms
-    update_interval: 1s
-    filters:
-      - calibrate_linear:
-          - 0.000 -> 0.000
-          - 0.070 -> 2.00
-      - sliding_window_moving_average:
-          window_size: 5
-          send_every: 1
-
-  - platform: template
-    name: "Freezer Power (Estimated)"
-    id: freezer_power_w
-    unit_of_measurement: "W"
-    device_class: power
-    state_class: measurement
-    accuracy_decimals: 0
-    update_interval: 1s
-    lambda: |-
-      const float V = 120.0;
-      return id(freezer_current).state * V;
-
-  - platform: total_daily_energy
-    name: "Freezer Energy Daily"
-    power_id: freezer_power_w
-    unit_of_measurement: "kWh"
-    device_class: energy
-    state_class: total_increasing
-    accuracy_decimals: 3
-
-  - platform: integration
-    name: "Freezer Energy Total"
-    id: freezer_energy_total
-    sensor: freezer_power_w
-    time_unit: h
-    unit_of_measurement: "kWh"
-    accuracy_decimals: 3
-    device_class: energy
-    state_class: total_increasing
-
-binary_sensor:
-  - platform: gpio
-    pin:
-      number: GPIO4
-      mode: INPUT_PULLDOWN
-    name: "Cheese PIR"
-    device_class: motion
-    id: pir_motion
-    filters:
-      - delayed_on: 50ms
-    on_press:
-      then:
-        - lambda: |-
-            id(screen_on) = true;
-            id(last_motion_ms) = millis();
-        - component.update: oled
-
-  - platform: template
-    name: "Freezer Current Active"
-    id: freezer_current_active
-    lambda: |-
-      return id(freezer_current).state > 0.25;
-    filters:
-      - delayed_on: 2s
-      - delayed_off: 10s
-
-  - platform: template
-    name: "Freezer Fault (Relay ON No Current)"
-    id: freezer_fault_no_current
-    lambda: |-
-      return id(relay_freezer).state && !id(freezer_current_active).state;
-    filters:
-      - delayed_on: 60s
-      - delayed_off: 5s
-
-  
+  - platform: output
+    name: "Relay 2 (Humidifier)"
+    id: relay_2
+    output: relay2_out
+    restore_mode: ALWAYS_OFF
 
 light:
   - platform: rgb
@@ -285,32 +331,368 @@ light:
           transition_length: 800ms
           update_interval: 800ms
 
+display:
+  - platform: lcd_pcf8574
+    id: lcd2004
+    dimensions: 20x4
+    address: 0x27
+    update_interval: 1s
+    lambda: |-
+      const uint32_t now = millis();
+
+      // --- Read sensors ---
+      const float airT = id(cheese_room_temp).state;
+      const float airH = id(cheese_room_hum).state;
+
+      const float prbT = id(cheese_probe_temp).state;
+      const float sp   = id(setpoint).state;
+      const float band = id(alarm_band).state;
+
+      const bool prb_valid = !isnan(prbT);
+      const bool air_valid = !isnan(airT);
+
+      const bool too_hot  = prb_valid && (prbT > (sp + band));
+      const bool too_cold = prb_valid && (prbT < (sp - band));
+
+      const float air_cut = sp - id(air_safety_delta).state;  // coupe sécurité air
+
+      const bool air_too_cold = air_valid && (airT < air_cut);
+
+      // FAR/NEAR
+      const float far_delta = id(temp_far_delta).state;
+      const bool is_far = prb_valid && (prbT > (sp + far_delta));
+
+      // Relay states
+      const bool r1_on = id(relay_freezer).state;
+      const bool r2_on = id(relay_2).state;
+
+      // R1 wait remaining (based on which mode would be used)
+      uint32_t r1_min_off_ms = (uint32_t)(
+        (is_far ? id(r1_far_min_off_sec).state : id(r1_near_min_off_sec).state) * 1000.0f
+      );
+
+      uint32_t r1_wait_left = 0;
+      if (!r1_on && id(r1_last_change_ms) != 0) {
+        uint32_t elapsed = now - id(r1_last_change_ms);
+        if (elapsed < r1_min_off_ms) r1_wait_left = (r1_min_off_ms - elapsed) / 1000;
+      }
+
+      const char* r1_mode = "IDLE";
+      if (air_too_cold) r1_mode = "AIR!";
+      else if (r1_on) r1_mode = (is_far ? "FAR" : "NEAR");
+      else if (too_hot && r1_wait_left > 0) r1_mode = "WAIT";
+      else if (too_hot) r1_mode = (is_far ? "NEED" : "need");
+
+      // HUM logic (simple)
+      const float hsp = id(humidity_setpoint).state;
+      const float hbd = id(humidity_band).state;
+      const bool hum_valid = !isnan(airH);
+      const bool too_dry = hum_valid && (airH < (hsp - hbd));
+      uint32_t r2_wait_left = 0;
+      const uint32_t r2_min_off_ms = (uint32_t)(id(r2_min_off_sec).state * 1000.0f);
+      if (!r2_on && id(r2_last_change_ms) != 0) {
+        uint32_t elapsed = now - id(r2_last_change_ms);
+        if (elapsed < r2_min_off_ms) r2_wait_left = (r2_min_off_ms - elapsed) / 1000;
+      }
+      const char* r2_mode = "IDLE";
+      if (r2_on) r2_mode = "HUM";
+      else if (too_dry && r2_wait_left > 0) r2_mode = "WAIT";
+      else if (too_dry) r2_mode = "NEED";
+
+      // Ligne 0
+      it.printf(0, 0, "Air:%4.1fC H:%3.0f%%", airT, airH);
+
+      // Ligne 1
+      it.printf(0, 1, "Prb:%4.1fC Sp:%4.1f", prbT, sp);
+
+      // Ligne 2
+      it.printf(0, 2, "R1:%c %-4s R2:%c %-4s",
+        r1_on ? '1' : '0', r1_mode,
+        r2_on ? '1' : '0', r2_mode);
+
+      // Ligne 3 : waits + heure
+      it.printf(0, 3, "W1:%3us W2:%3us %s",
+        r1_wait_left,
+        r2_wait_left,
+        id(esptime).now().strftime("%H:%M").c_str());
+
+sensor:
+  - platform: dht
+    pin: GPIO6
+    model: DHT22
+    temperature:
+      name: "Cheese Air Temperature"
+      id: cheese_room_temp
+      filters:
+        - lambda: if (isnan(x)) return {}; else return x;
+    humidity:
+      name: "Cheese Air Humidity"
+      id: cheese_room_hum
+      filters:
+        - lambda: if (isnan(x)) return {}; else return x;
+    update_interval: 60s
+
+  - platform: dallas_temp
+    name: "Cheese Probe Temperature"
+    id: cheese_probe_temp
+    update_interval: 30s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 4
+          send_every: 1
+
+  # CT clamp
+  - platform: adc
+    pin: GPIO10
+    id: adc_ct
+    attenuation: 12db
+    update_interval: 1s
+
+  - platform: ct_clamp
+    sensor: adc_ct
+    name: "Freezer Current Raw"
+    id: freezer_current_raw
+    sample_duration: 200ms
+    update_interval: 1s
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+
+  - platform: template
+    name: "Freezer Current"
+    id: freezer_current
+    unit_of_measurement: "A"
+    device_class: current
+    state_class: measurement
+    accuracy_decimals: 2
+    update_interval: 1s
+    lambda: |-
+      float i = id(freezer_current_raw).state;
+      if (isnan(i)) return NAN;
+      return (i * id(ct_gain).state) + id(ct_offset).state;
+
+  - platform: template
+    name: "Freezer Power (Estimated)"
+    id: freezer_power_w
+    unit_of_measurement: "W"
+    device_class: power
+    state_class: measurement
+    accuracy_decimals: 0
+    update_interval: 1s
+    lambda: |-
+      const float V = 120.0;
+      float p = id(freezer_current).state * V;
+      if (isnan(p) || p < 500.0) return 0.0;  // coupe sous 500W
+      return p;
+
+binary_sensor:
+  - platform: gpio
+    pin:
+      number: GPIO4
+      mode: INPUT_PULLDOWN
+    name: "Cheese PIR"
+    device_class: motion
+    id: pir_motion
+    filters:
+      - delayed_on: 50ms
+    on_press:
+      then:
+        - binary_sensor.template.publish:
+            id: lcd_backlight_state
+            state: ON
+
+  # Backlight “virtuel” avec delayed_off dynamique
+  - platform: template
+    id: lcd_backlight_state
+    filters:
+      - delayed_off: !lambda |-
+          return (uint32_t)(id(screen_timeout_min).state * 60.0f);
+    on_press:
+      then:
+        - lambda: |-
+            id(lcd2004).backlight();
+    on_release:
+      then:
+        - lambda: |-
+            id(lcd2004).no_backlight();
+
+  # Courant significatif quand le freezer tourne (~500W@120V => ~4.2A)
+  - platform: template
+    name: "Freezer Current Active"
+    id: freezer_current_active
+    lambda: |-
+      const float i = id(freezer_current).state;
+      if (isnan(i)) return false;
+      return i > 4.2;
+    filters:
+      - delayed_on: 2s
+      - delayed_off: 10s
+
+  # Fault si relais ON mais pas de courant (après délai)
+  - platform: template
+    name: "Freezer Fault (Relay ON no current)"
+    id: freezer_fault_no_current
+    lambda: |-
+      return id(relay_freezer).state && !id(freezer_current_active).state;
+    filters:
+      - delayed_on: 60s
+      - delayed_off: 5s
+
 interval:
+  # -------- RELAY 1 (TEMP) : dynamique FAR/NEAR + safety AIR cut --------
   - interval: 5s
     then:
       - lambda: |-
-          if (!id(led_enabled).state) {
-            id(status_led).turn_off().perform();
-            return;
-          }
-          const float t = id(cheese_probe_temp).state;
-          if (isnan(t)) return;
+          const uint32_t now = millis();
+          if (now < id(inhibit_until_ms)) return;
+
+          const float prbT = id(cheese_probe_temp).state;
+          if (isnan(prbT)) return;
 
           const float sp   = id(setpoint).state;
           const float band = id(alarm_band).state;
 
-          const bool too_hot  = t > (sp + band);
-          const bool too_cold = t < (sp - band);
-          const bool cooling = id(relay_freezer).state;  // état réel du relais
+          // Demandes sur PROBE
+          const bool too_hot  = prbT > (sp + band);
+          const bool too_cold = prbT < (sp - band);
+
+          // Safety cut sur AIR
+          const float airT = id(cheese_room_temp).state;
+          const bool air_valid = !isnan(airT);
+          const float air_cut = sp - id(air_safety_delta).state;
+          const bool air_too_cold = air_valid && (airT < air_cut);
+
+          const bool r1_on = id(relay_freezer).state;
+
+          // init timestamps
+          if (id(r1_last_change_ms) == 0) id(r1_last_change_ms) = now;
+          if (r1_on && id(r1_on_start_ms) == 0) id(r1_on_start_ms) = now;
+
+          // OFF immédiat si safety air ou trop froid probe
+          if ((air_too_cold || too_cold) && r1_on) {
+            id(relay_freezer).turn_off();
+            id(r1_last_change_ms) = now;
+            id(r1_on_start_ms) = 0;
+            return;
+          }
+
+          // Choix FAR/NEAR
+          const float far_delta = id(temp_far_delta).state;
+          const bool is_far = prbT > (sp + far_delta);
+
+          uint32_t max_on_ms;
+          uint32_t min_off_ms;
+
+          if (is_far) {
+            max_on_ms  = (uint32_t)(id(r1_far_max_on_sec).state  * 1000.0f);
+            min_off_ms = (uint32_t)(id(r1_far_min_off_sec).state * 1000.0f);
+          } else {
+            max_on_ms  = (uint32_t)(id(r1_near_max_on_sec).state  * 1000.0f);
+            min_off_ms = (uint32_t)(id(r1_near_min_off_sec).state * 1000.0f);
+          }
+
+          // Si ON : coupe au bout de max_on_ms
+          if (r1_on) {
+            if ((now - id(r1_on_start_ms)) >= max_on_ms) {
+              id(relay_freezer).turn_off();
+              id(r1_last_change_ms) = now;
+              id(r1_on_start_ms) = 0;
+            }
+            return;
+          }
+
+          // Si OFF : attend min_off avant de rallumer
+          const bool can_turn_on = (now - id(r1_last_change_ms)) >= min_off_ms;
+
+          // On n'allume que si on a besoin de froid ET pas en safety air
+          if (too_hot && can_turn_on && !air_too_cold) {
+            id(relay_freezer).turn_on();
+            id(r1_last_change_ms) = now;
+            id(r1_on_start_ms) = now;
+          }
+
+  # -------- RELAY 2 (HUM) : max_on + min_off (déjà doux) --------
+  - interval: 5s
+    then:
+      - lambda: |-
+          const uint32_t now = millis();
+          if (now < id(inhibit_until_ms)) return;
+
+          const float h = id(cheese_room_hum).state;
+          if (isnan(h)) return;
+
+          const float sp   = id(humidity_setpoint).state;
+          const float band = id(humidity_band).state;
+
+          const bool too_dry = h < (sp - band);
+          const bool too_wet = h > (sp + band);
+
+          const uint32_t max_on_ms  = (uint32_t)(id(r2_max_on_sec).state  * 1000.0f);
+          const uint32_t min_off_ms = (uint32_t)(id(r2_min_off_sec).state * 1000.0f);
+
+          if (id(r2_last_change_ms) == 0) id(r2_last_change_ms) = now;
+
+          const bool r2_on = id(relay_2).state;
+
+          if (r2_on && id(r2_on_start_ms) == 0) id(r2_on_start_ms) = now;
+
+          // OFF immédiat si trop humide
+          if (too_wet && r2_on) {
+            id(relay_2).turn_off();
+            id(r2_last_change_ms) = now;
+            id(r2_on_start_ms) = 0;
+            return;
+          }
+
+          // Si ON : coupe au bout de max_on
+          if (r2_on) {
+            if ((now - id(r2_on_start_ms)) >= max_on_ms) {
+              id(relay_2).turn_off();
+              id(r2_last_change_ms) = now;
+              id(r2_on_start_ms) = 0;
+            }
+            return;
+          }
+
+          // Si OFF : attend min_off avant de rallumer
+          const bool can_turn_on = (now - id(r2_last_change_ms)) >= min_off_ms;
+
+          if (too_dry && can_turn_on) {
+            id(relay_2).turn_on();
+            id(r2_last_change_ms) = now;
+            id(r2_on_start_ms) = now;
+          }
+
+  # -------- LED status (simple) --------
+  - interval: 5s
+    then:
+      - lambda: |-
+          // Priorités:
+          // 1) fault => violet strobe
+          // 2) trop chaud => rouge strobe
+          // 3) trop froid => bleu strobe
+          // 4) cooling => cyan pulse
+          // 5) humidifying => vert pulse
+          // 6) stable => rainbow doux
+
+          const float prbT = id(cheese_probe_temp).state;
+          const float sp   = id(setpoint).state;
+          const float band = id(alarm_band).state;
+
+          const bool prb_valid = !isnan(prbT);
+          const bool too_hot  = prb_valid && (prbT > (sp + band));
+          const bool too_cold = prb_valid && (prbT < (sp - band));
+
           if (id(freezer_fault_no_current).state) {
             auto c = id(status_led).turn_on();
-            c.set_rgb(1.0, 0.0, 1.0);   // violet
+            c.set_rgb(1.0, 0.0, 1.0); // violet
             c.set_brightness(1.0);
             c.set_effect("Strobe");
             c.perform();
             return;
           }
-          // 🔴 Trop chaud → rouge strobe
+
           if (too_hot) {
             auto c = id(status_led).turn_on();
             c.set_rgb(1.0, 0.0, 0.0);
@@ -320,7 +702,6 @@ interval:
             return;
           }
 
-          // 🔵 Trop froid → bleu strobe
           if (too_cold) {
             auto c = id(status_led).turn_on();
             c.set_rgb(0.0, 0.0, 1.0);
@@ -330,53 +711,37 @@ interval:
             return;
           }
 
-          // 💠 En route → cyan pulse
-          if (cooling) {
+          const bool cooling = id(relay_freezer).state;
+          const bool humid   = id(relay_2).state;
+
+          if (cooling && humid) {
             auto c = id(status_led).turn_on();
-            c.set_rgb(0.0, 1.0, 1.0);
+            c.set_rgb(1.0, 0.0, 1.0); // magenta
             c.set_brightness(0.6);
             c.set_effect("Pulse");
             c.perform();
             return;
           }
 
-          // 🌈 OK / stable → arc-en-ciel doux
+          if (cooling) {
+            auto c = id(status_led).turn_on();
+            c.set_rgb(0.0, 1.0, 1.0); // cyan
+            c.set_brightness(0.6);
+            c.set_effect("Pulse");
+            c.perform();
+            return;
+          }
+
+          if (humid) {
+            auto c = id(status_led).turn_on();
+            c.set_rgb(0.0, 1.0, 0.0); // vert
+            c.set_brightness(0.6);
+            c.set_effect("Pulse");
+            c.perform();
+            return;
+          }
+
           auto c = id(status_led).turn_on();
           c.set_brightness(0.4);
           c.set_effect("Rainbow");
           c.perform();
-
-  - interval: 1s
-    then:
-      - lambda: |-
-          // Timeout en ms (minutes -> ms)
-          const uint32_t timeout_ms = (uint32_t)(id(screen_timeout_min).state * 60.0f * 1000.0f);
-
-          // Si on n'a jamais eu de mouvement, on ne fait rien
-          if (id(last_motion_ms) == 0) return;
-
-          // Si écran ON et délai dépassé -> OFF
-          if (id(screen_on) && (millis() - id(last_motion_ms) > timeout_ms)) {
-            id(screen_on) = false;
-            id(last_motion_ms) = 0;  // optionnel: reset
-            id(oled).update();
-          }
-
-switch:
-  - platform: template
-    name: "Enable Status LED"
-    id: led_enabled
-    optimistic: true
-    restore_mode: RESTORE_DEFAULT_ON
-
-  - platform: output
-    name: "Relay 1 (Freezer)"
-    id: relay_freezer
-    output: relay1_out
-    restore_mode: ALWAYS_OFF
-
-  - platform: output
-    name: "Relay 2"
-    id: relay_2
-    output: relay2_out
-    restore_mode: ALWAYS_OFF
