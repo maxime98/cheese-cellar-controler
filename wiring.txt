@@ -1,0 +1,126 @@
+schéma ASCII de câblage clair (avec notes) pour ton montage ESP32-S2 mini + LCD2004 I2C + DHT22 + DS18B20 + PIR + CT clamp + 2 relais.
+
+⚠️ Sécurité : tout ce qui est AC/mains (120V/230V) doit être fait dans un boîtier, avec serre-câbles, fusible si possible, et isolation. Ne branche jamais le secteur directement sur l’ESP32.
+
+1) Vue d’ensemble (basse tension)
+                 +----------------------+
+                 |   ESP32-S2 mini      |
+                 | (LOLIN S2 mini)      |
+                 |                      |
+I2C SCL  GPIO1 ---+-------------------+ |      +------------------+
+I2C SDA  GPIO2 ---+-------------------|-+------| LCD2004 + PCF8574|
+GND      GND  ----+-------------------|-+------| GND              |
+5V       5V   ----+-------------------|-+------| VCC (5V)         |
+                 |                   | |      | SDA / SCL (I2C)   |
+DS18B20  GPIO8 ---+---- DATA         | |      +------------------+
+                 |                   | |
+DHT22    GPIO6 ---+---- DATA         | |
+PIR      GPIO4 ---+---- OUT          | |
+ADC CT   GPIO10 --+---- ADC IN       | |
+Relay1   GPIO34 --+---- IN1          | |
+Relay2   GPIO21 --+---- IN2          | |
+                 +----------------------+
+
+Power:
+- ESP32 powered by 5V (USB or 5V PSU)
+- LCD2004 (PCF8574) powered by 5V
+- Relay board powered by 5V (recommended separate 5V PSU if relays are noisy)
+- All GND must be common (ESP32, relay board, sensors, LCD)
+
+2) LCD 20x4 I2C (PCF8574)
+LCD2004 PCF8574 board     ESP32-S2 mini
+---------------------     ------------
+VCC (5V)  -------------   5V
+GND       -------------   GND
+SDA       -------------   GPIO2 (SDA)
+SCL       -------------   GPIO1 (SCL)
+
+Address typically: 0x27 (sometimes 0x3F)
+Backlight: controlled via it.backlight() / it.no_backlight()
+(PCF8574 jumper must be closed for backlight control)
+
+3) PIR motion sensor (pour backlight)
+PIR Sensor              ESP32-S2 mini
+---------              ------------
+VCC  -------------     3.3V (or 5V if sensor supports it)
+GND  -------------     GND
+OUT  -------------     GPIO4  (INPUT_PULLDOWN in config)
+
+
+Si ton PIR sort du 5V en OUT : mets un diviseur ou vérifie qu’il est compatible 3.3V.
+
+4) DS18B20 (cheese probe temp) sur OneWire
+Recommandé (3 fils + résistance pull-up 4.7k)
+DS18B20                  ESP32-S2 mini
+-------                  ------------
+VDD  -------------       3.3V
+GND  -------------       GND
+DQ   -------------       GPIO8
+
+Pull-up:
+3.3V ---[4.7k]--- DQ (GPIO8)
+
+5) DHT22 (air temp/humidity)
+DHT22                    ESP32-S2 mini
+-----                    ------------
+VCC  -------------       3.3V (or 5V depending module)
+GND  -------------       GND
+DATA -------------       GPIO6
+
+Pull-up:
+3.3V ---[10k]--- DATA (if not already on the module)
+
+6) Relais 2 canaux (Freezer + Humidifier)
+Relay Board (2ch)        ESP32-S2 mini
+------------------       ------------
+VCC (5V)  -----------    5V
+GND       -----------    GND
+IN1       -----------    GPIO34   (Relay 1 Freezer)
+IN2       -----------    GPIO21   (Relay 2 Humidifier)
+
+
+Si c’est un relais “low level trigger” et que tu as inverted: true, c’est normal : ON = niveau bas.
+
+7) Câblage AC (Mains) — RELAY 1 Freezer, RELAY 2 Humidifier
+Principe standard (couper la phase / hot)
+Mains HOT (L)  ----->  COM (Relay)
+                      NO  (Relay) -----> HOT vers appareil
+Mains NEUTRAL (N) ----------------------> NEUTRAL vers appareil
+EARTH (PE) -----------------------------> Terre vers appareil (si présent)
+
+Freezer (Relay 1)
+HOT (L) -> Relay1 COM
+Relay1 NO -> Hot Freezer
+Neutral -> Neutral Freezer
+Ground -> Ground Freezer
+
+Ultrasonic humidifier (Relay 2)
+HOT (L) -> Relay2 COM
+Relay2 NO -> Hot Humidifier
+Neutral -> Neutral Humidifier
+
+
+Utilise NO (Normally Open) pour que tout soit OFF par défaut.
+
+8) CT Clamp (SCT-030) + module conditionneur -> ADC GPIO10
+
+⚠️ Important : une CT clamp ne se branche pas directement sur l’ADC sans conditionnement (burden + offset + filtrage).
+Tu sembles avoir un circuit donnant un signal centré vers ~1.65V (midpoint).
+
+Schéma conceptuel
+Freezer HOT wire
+     |
+     |  (CT Clamp around ONE wire ONLY)
+    ( )
+     |
+CT Clamp output --> burden resistor + rect/filter (or conditioning board)
+                 --> biased to mid-voltage (~1.65V)
+                 --> ADC OUT -----> GPIO10 (ADC)
+GND --------------------------------> GND ESP32
+
+
+Si tu utilises un module type “current sensor board” :
+
+CT Board OUT  -----> GPIO10
+CT Board GND  -----> GND
+CT Board VCC  -----> 3.3V or 5V (as required)
