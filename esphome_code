@@ -84,6 +84,28 @@ globals:
     restore_value: no
     initial_value: "0"
 
+  # ---- Probe slope / drop tracking ----
+  - id: prb_last_sample_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: "0"
+
+  - id: prb_last_value
+    type: float
+    restore_value: no
+    initial_value: "NAN"
+
+  - id: prb_drop_c_per_10m
+    type: float
+    restore_value: no
+    initial_value: "0.0"
+
+  # ---- Air safety latch (hysteresis) ----
+  - id: air_safety_latched
+    type: bool
+    restore_value: no
+    initial_value: "false"
+
 number:
   # ---- TEMP (Probe) ----
   - platform: template
@@ -94,7 +116,7 @@ number:
     min_value: 4
     max_value: 20
     step: 0.1
-    initial_value: 12.0
+    initial_value: 11.5
 
   - platform: template
     name: "Temp Band (Probe)"
@@ -106,8 +128,7 @@ number:
     step: 0.1
     initial_value: 0.5
 
-  # Seuil "loin/proche" par rapport à la consigne (probe)
-  # Si probe > sp + temp_far_delta => mode FAR, sinon NEAR
+  # Seuil "FAR"
   - platform: template
     name: "Temp FAR delta (°C)"
     id: temp_far_delta
@@ -116,11 +137,22 @@ number:
     min_value: 0.5
     max_value: 8.0
     step: 0.1
-    initial_value: 2.0
+    initial_value: 2.8
     unit_of_measurement: "°C"
 
-  # Coupe sécurité sur l’air: air < (sp - air_safety_delta) => OFF immédiat
-  # Ex: sp=12 et delta=7 => cut à 5°C
+  # Seuil "MID" (entre FAR et NEAR)
+  - platform: template
+    name: "Temp MID delta (°C)"
+    id: temp_mid_delta
+    optimistic: true
+    restore_value: true
+    min_value: 0.3
+    max_value: 5.0
+    step: 0.1
+    initial_value: 1.0
+    unit_of_measurement: "°C"
+
+  # Coupe sécurité sur l’air: air < (sp - air_safety_delta) => latch ON (OFF immédiat)
   - platform: template
     name: "Air safety delta (°C)"
     id: air_safety_delta
@@ -129,10 +161,22 @@ number:
     min_value: 0
     max_value: 15
     step: 0.1
-    initial_value: 7.0
+    initial_value: 7.5
     unit_of_measurement: "°C"
 
-  # Timings FAR (loin)
+  # Hystérésis air (évite oscillation autour de air_cut)
+  - platform: template
+    name: "Air safety hyst (°C)"
+    id: air_safety_hyst
+    optimistic: true
+    restore_value: true
+    min_value: 0.0
+    max_value: 3.0
+    step: 0.1
+    initial_value: 0.6
+    unit_of_measurement: "°C"
+
+  # Timings FAR (loin) - recommandés
   - platform: template
     name: "R1 FAR Max ON (sec)"
     id: r1_far_max_on_sec
@@ -141,7 +185,7 @@ number:
     min_value: 10
     max_value: 600
     step: 10
-    initial_value: 180
+    initial_value: 360
     unit_of_measurement: "s"
 
   - platform: template
@@ -152,10 +196,10 @@ number:
     min_value: 60
     max_value: 7200
     step: 30
-    initial_value: 600
+    initial_value: 300
     unit_of_measurement: "s"
 
-  # Timings NEAR (proche)
+  # Timings NEAR (proche) - recommandés
   - platform: template
     name: "R1 NEAR Max ON (sec)"
     id: r1_near_max_on_sec
@@ -164,7 +208,7 @@ number:
     min_value: 10
     max_value: 300
     step: 5
-    initial_value: 60
+    initial_value: 90
     unit_of_measurement: "s"
 
   - platform: template
@@ -175,7 +219,42 @@ number:
     min_value: 120
     max_value: 7200
     step: 60
-    initial_value: 1800
+    initial_value: 900
+    unit_of_measurement: "s"
+
+  # Bonus OFF dynamique proche consigne
+  - platform: template
+    name: "R1 OFF Bonus (sec) near"
+    id: r1_off_bonus_sec
+    optimistic: true
+    restore_value: true
+    min_value: 0
+    max_value: 7200
+    step: 60
+    initial_value: 1200
+    unit_of_measurement: "s"
+
+  # Pente: si la probe descend vite, on allonge l'attente
+  - platform: template
+    name: "Probe Fast Drop (°C / 10min)"
+    id: probe_fast_drop_c_per_10m
+    optimistic: true
+    restore_value: true
+    min_value: 0.1
+    max_value: 5.0
+    step: 0.1
+    initial_value: 1.0
+    unit_of_measurement: "°C"
+
+  - platform: template
+    name: "R1 OFF Bonus (sec) if fast drop"
+    id: r1_off_bonus_fastdrop_sec
+    optimistic: true
+    restore_value: true
+    min_value: 0
+    max_value: 7200
+    step: 60
+    initial_value: 900
     unit_of_measurement: "s"
 
   # ---- HUMIDITY ----
@@ -201,7 +280,6 @@ number:
     initial_value: 3
     unit_of_measurement: "%"
 
-  # (tu as demandé 5 min max + 10 min mini: default ici)
   - platform: template
     name: "R2 Max ON (sec)"
     id: r2_max_on_sec
@@ -264,7 +342,6 @@ number:
     unit_of_measurement: "A"
 
 output:
-  # Relais
   - platform: gpio
     id: relay1_out
     pin: GPIO34
@@ -275,7 +352,6 @@ output:
     pin: GPIO21
     inverted: true
 
-  # LED RGB (une seule)
   - platform: ledc
     pin: GPIO40
     id: out_red
@@ -340,7 +416,6 @@ display:
     lambda: |-
       const uint32_t now = millis();
 
-      // --- Read sensors ---
       const float airT = id(cheese_room_temp).state;
       const float airH = id(cheese_room_hum).state;
 
@@ -354,46 +429,82 @@ display:
       const bool too_hot  = prb_valid && (prbT > (sp + band));
       const bool too_cold = prb_valid && (prbT < (sp - band));
 
-      const float air_cut = sp - id(air_safety_delta).state;  // coupe sécurité air
+      // Air safety latch info
+      const float air_cut_on  = sp - id(air_safety_delta).state;
+      const float air_cut_off = air_cut_on + id(air_safety_hyst).state;
 
-      const bool air_too_cold = air_valid && (airT < air_cut);
-
-      // FAR/NEAR
+      // Zones
+      const float delta = prb_valid ? (prbT - sp) : 0.0f;
       const float far_delta = id(temp_far_delta).state;
-      const bool is_far = prb_valid && (prbT > (sp + far_delta));
+      const float mid_delta = id(temp_mid_delta).state;
 
-      // Relay states
+      const char* zone = "NEAR";
+      if (prb_valid) {
+        if (delta > far_delta) zone = "FAR";
+        else if (delta > mid_delta) zone = "MID";
+        else zone = "NEAR";
+      }
+
       const bool r1_on = id(relay_freezer).state;
       const bool r2_on = id(relay_2).state;
 
-      // R1 wait remaining (based on which mode would be used)
-      uint32_t r1_min_off_ms = (uint32_t)(
-        (is_far ? id(r1_far_min_off_sec).state : id(r1_near_min_off_sec).state) * 1000.0f
-      );
+      // Estimation wait R1 (recalcule la même logique min_off dynamique, pour l'affichage)
+      uint32_t min_off_ms_base = (uint32_t)(id(r1_near_min_off_sec).state * 1000.0f);
+      if (prb_valid) {
+        if (delta > far_delta) {
+          min_off_ms_base = (uint32_t)(id(r1_far_min_off_sec).state * 1000.0f);
+        } else if (delta > mid_delta) {
+          // interpolation MID
+          const float t = (delta - mid_delta) / (far_delta - mid_delta + 0.0001f);
+          const float far_off = id(r1_far_min_off_sec).state;
+          const float near_off= id(r1_near_min_off_sec).state;
+          const float off_s = near_off + t * (far_off - near_off);
+          min_off_ms_base = (uint32_t)(off_s * 1000.0f);
+        } else {
+          min_off_ms_base = (uint32_t)(id(r1_near_min_off_sec).state * 1000.0f);
+        }
+      }
+
+      uint32_t min_off_ms = min_off_ms_base;
+      if (too_hot && prb_valid) {
+        float f = 0.0f;
+        if (delta <= mid_delta) f = 1.0f;
+        else if (delta >= far_delta) f = 0.0f;
+        else f = 1.0f - ((delta - mid_delta) / (far_delta - mid_delta + 0.0001f));
+
+        min_off_ms += (uint32_t)(id(r1_off_bonus_sec).state * 1000.0f * f);
+
+        const float fast_th = id(probe_fast_drop_c_per_10m).state;
+        if (id(prb_drop_c_per_10m) > fast_th) {
+          min_off_ms += (uint32_t)(id(r1_off_bonus_fastdrop_sec).state * 1000.0f);
+        }
+      }
 
       uint32_t r1_wait_left = 0;
       if (!r1_on && id(r1_last_change_ms) != 0) {
         uint32_t elapsed = now - id(r1_last_change_ms);
-        if (elapsed < r1_min_off_ms) r1_wait_left = (r1_min_off_ms - elapsed) / 1000;
+        if (elapsed < min_off_ms) r1_wait_left = (min_off_ms - elapsed) / 1000;
       }
 
       const char* r1_mode = "IDLE";
-      if (air_too_cold) r1_mode = "AIR!";
-      else if (r1_on) r1_mode = (is_far ? "FAR" : "NEAR");
+      if (id(air_safety_latched)) r1_mode = "AIR!";
+      else if (r1_on) r1_mode = zone;
       else if (too_hot && r1_wait_left > 0) r1_mode = "WAIT";
-      else if (too_hot) r1_mode = (is_far ? "NEED" : "need");
+      else if (too_hot) r1_mode = "NEED";
 
       // HUM logic (simple)
       const float hsp = id(humidity_setpoint).state;
       const float hbd = id(humidity_band).state;
       const bool hum_valid = !isnan(airH);
       const bool too_dry = hum_valid && (airH < (hsp - hbd));
+
       uint32_t r2_wait_left = 0;
       const uint32_t r2_min_off_ms = (uint32_t)(id(r2_min_off_sec).state * 1000.0f);
       if (!r2_on && id(r2_last_change_ms) != 0) {
         uint32_t elapsed = now - id(r2_last_change_ms);
         if (elapsed < r2_min_off_ms) r2_wait_left = (r2_min_off_ms - elapsed) / 1000;
       }
+
       const char* r2_mode = "IDLE";
       if (r2_on) r2_mode = "HUM";
       else if (too_dry && r2_wait_left > 0) r2_mode = "WAIT";
@@ -402,18 +513,18 @@ display:
       // Ligne 0
       it.printf(0, 0, "Air:%4.1fC H:%3.0f%%", airT, airH);
 
-      // Ligne 1
-      it.printf(0, 1, "Prb:%4.1fC Sp:%4.1f", prbT, sp);
+      // Ligne 1 (ajout delta + drop)
+      it.printf(0, 1, "Prb:%4.1f Sp:%4.1f", prbT, sp);
 
       // Ligne 2
       it.printf(0, 2, "R1:%c %-4s R2:%c %-4s",
         r1_on ? '1' : '0', r1_mode,
         r2_on ? '1' : '0', r2_mode);
 
-      // Ligne 3 : waits + heure
-      it.printf(0, 3, "W1:%3us W2:%3us %s",
+      // Ligne 3 : waits + drop + heure (drop en °C/10m)
+      it.printf(0, 3, "W1:%3us d:%3.1f %s",
         r1_wait_left,
-        r2_wait_left,
+        id(prb_drop_c_per_10m),
         id(esptime).now().strftime("%H:%M").c_str());
 
 sensor:
@@ -483,7 +594,7 @@ sensor:
     lambda: |-
       const float V = 120.0;
       float p = id(freezer_current).state * V;
-      if (isnan(p) || p < 500.0) return 0.0;  // coupe sous 500W
+      if (isnan(p) || p < 500.0) return 0.0;  // coupe sous 500W (à ajuster si besoin)
       return p;
 
 binary_sensor:
@@ -540,7 +651,7 @@ binary_sensor:
       - delayed_off: 5s
 
 interval:
-  # -------- RELAY 1 (TEMP) : dynamique FAR/NEAR + safety AIR cut --------
+  # -------- RELAY 1 (TEMP) : FAR/MID/NEAR + OFF dynamique + pente + safety AIR latch --------
   - interval: 5s
     then:
       - lambda: |-
@@ -553,15 +664,38 @@ interval:
           const float sp   = id(setpoint).state;
           const float band = id(alarm_band).state;
 
-          // Demandes sur PROBE
+          // --- Pente (°C / 10 min), mise à jour ~toutes les 60s ---
+          if (id(prb_last_sample_ms) == 0 || isnan(id(prb_last_value))) {
+            id(prb_last_sample_ms) = now;
+            id(prb_last_value) = prbT;
+            id(prb_drop_c_per_10m) = 0.0f;
+          } else {
+            const uint32_t dt_ms = now - id(prb_last_sample_ms);
+            if (dt_ms >= 60000) { // 60s
+              const float dT = id(prb_last_value) - prbT; // positif si ça descend
+              const float minutes = dt_ms / 60000.0f;
+              const float drop_per_10m = (minutes > 0) ? (dT * (10.0f / minutes)) : 0.0f;
+              id(prb_drop_c_per_10m) = drop_per_10m;
+              id(prb_last_sample_ms) = now;
+              id(prb_last_value) = prbT;
+            }
+          }
+
+          // --- Demandes sur PROBE ---
           const bool too_hot  = prbT > (sp + band);
           const bool too_cold = prbT < (sp - band);
 
-          // Safety cut sur AIR
+          // --- Safety cut AIR + hystérésis + latch ---
           const float airT = id(cheese_room_temp).state;
           const bool air_valid = !isnan(airT);
-          const float air_cut = sp - id(air_safety_delta).state;
-          const bool air_too_cold = air_valid && (airT < air_cut);
+
+          const float air_cut_on  = sp - id(air_safety_delta).state;
+          const float air_cut_off = air_cut_on + id(air_safety_hyst).state;
+
+          if (air_valid) {
+            if (!id(air_safety_latched) && (airT < air_cut_on)) id(air_safety_latched) = true;
+            else if (id(air_safety_latched) && (airT > air_cut_off)) id(air_safety_latched) = false;
+          }
 
           const bool r1_on = id(relay_freezer).state;
 
@@ -569,30 +703,67 @@ interval:
           if (id(r1_last_change_ms) == 0) id(r1_last_change_ms) = now;
           if (r1_on && id(r1_on_start_ms) == 0) id(r1_on_start_ms) = now;
 
-          // OFF immédiat si safety air ou trop froid probe
-          if ((air_too_cold || too_cold) && r1_on) {
+          // OFF immédiat si trop froid probe OU air latch
+          if ((too_cold || id(air_safety_latched)) && r1_on) {
             id(relay_freezer).turn_off();
             id(r1_last_change_ms) = now;
             id(r1_on_start_ms) = 0;
             return;
           }
 
-          // Choix FAR/NEAR
+          // --- Zones FAR / MID / NEAR ---
           const float far_delta = id(temp_far_delta).state;
-          const bool is_far = prbT > (sp + far_delta);
+          const float mid_delta = id(temp_mid_delta).state;
+
+          const float delta = prbT - sp;
+
+          enum Zone {NEAR, MID, FAR};
+          Zone zone = NEAR;
+          if (delta > far_delta) zone = FAR;
+          else if (delta > mid_delta) zone = MID;
+          else zone = NEAR;
 
           uint32_t max_on_ms;
-          uint32_t min_off_ms;
+          uint32_t min_off_ms_base;
 
-          if (is_far) {
-            max_on_ms  = (uint32_t)(id(r1_far_max_on_sec).state  * 1000.0f);
-            min_off_ms = (uint32_t)(id(r1_far_min_off_sec).state * 1000.0f);
+          if (zone == FAR) {
+            max_on_ms       = (uint32_t)(id(r1_far_max_on_sec).state  * 1000.0f);
+            min_off_ms_base = (uint32_t)(id(r1_far_min_off_sec).state * 1000.0f);
+          } else if (zone == MID) {
+            const float t = (delta - mid_delta) / (far_delta - mid_delta + 0.0001f);
+            const float far_on  = id(r1_far_max_on_sec).state;
+            const float near_on = id(r1_near_max_on_sec).state;
+            const float far_off = id(r1_far_min_off_sec).state;
+            const float near_off= id(r1_near_min_off_sec).state;
+
+            const float on_s  = near_on  + t * (far_on  - near_on);
+            const float off_s = near_off + t * (far_off - near_off);
+
+            max_on_ms       = (uint32_t)(on_s  * 1000.0f);
+            min_off_ms_base = (uint32_t)(off_s * 1000.0f);
           } else {
-            max_on_ms  = (uint32_t)(id(r1_near_max_on_sec).state  * 1000.0f);
-            min_off_ms = (uint32_t)(id(r1_near_min_off_sec).state * 1000.0f);
+            max_on_ms       = (uint32_t)(id(r1_near_max_on_sec).state  * 1000.0f);
+            min_off_ms_base = (uint32_t)(id(r1_near_min_off_sec).state * 1000.0f);
           }
 
-          // Si ON : coupe au bout de max_on_ms
+          // --- Min OFF dynamique : plus on est proche, plus on attend ---
+          uint32_t min_off_ms = min_off_ms_base;
+
+          if (too_hot) {
+            float f = 0.0f;
+            if (delta <= mid_delta) f = 1.0f;
+            else if (delta >= far_delta) f = 0.0f;
+            else f = 1.0f - ((delta - mid_delta) / (far_delta - mid_delta + 0.0001f));
+
+            min_off_ms += (uint32_t)(id(r1_off_bonus_sec).state * 1000.0f * f);
+
+            const float fast_th = id(probe_fast_drop_c_per_10m).state;
+            if (id(prb_drop_c_per_10m) > fast_th) {
+              min_off_ms += (uint32_t)(id(r1_off_bonus_fastdrop_sec).state * 1000.0f);
+            }
+          }
+
+          // --- Si ON : coupe au bout de max_on_ms ---
           if (r1_on) {
             if ((now - id(r1_on_start_ms)) >= max_on_ms) {
               id(relay_freezer).turn_off();
@@ -602,17 +773,16 @@ interval:
             return;
           }
 
-          // Si OFF : attend min_off avant de rallumer
+          // --- Si OFF : attend min_off avant de rallumer ---
           const bool can_turn_on = (now - id(r1_last_change_ms)) >= min_off_ms;
 
-          // On n'allume que si on a besoin de froid ET pas en safety air
-          if (too_hot && can_turn_on && !air_too_cold) {
+          if (too_hot && can_turn_on && !id(air_safety_latched)) {
             id(relay_freezer).turn_on();
             id(r1_last_change_ms) = now;
             id(r1_on_start_ms) = now;
           }
 
-  # -------- RELAY 2 (HUM) : max_on + min_off (déjà doux) --------
+  # -------- RELAY 2 (HUM) : max_on + min_off --------
   - interval: 5s
     then:
       - lambda: |-
@@ -637,7 +807,6 @@ interval:
 
           if (r2_on && id(r2_on_start_ms) == 0) id(r2_on_start_ms) = now;
 
-          // OFF immédiat si trop humide
           if (too_wet && r2_on) {
             id(relay_2).turn_off();
             id(r2_last_change_ms) = now;
@@ -645,7 +814,6 @@ interval:
             return;
           }
 
-          // Si ON : coupe au bout de max_on
           if (r2_on) {
             if ((now - id(r2_on_start_ms)) >= max_on_ms) {
               id(relay_2).turn_off();
@@ -655,7 +823,6 @@ interval:
             return;
           }
 
-          // Si OFF : attend min_off avant de rallumer
           const bool can_turn_on = (now - id(r2_last_change_ms)) >= min_off_ms;
 
           if (too_dry && can_turn_on) {
@@ -664,18 +831,10 @@ interval:
             id(r2_on_start_ms) = now;
           }
 
-  # -------- LED status (simple) --------
+  # -------- LED status --------
   - interval: 5s
     then:
       - lambda: |-
-          // Priorités:
-          // 1) fault => violet strobe
-          // 2) trop chaud => rouge strobe
-          // 3) trop froid => bleu strobe
-          // 4) cooling => cyan pulse
-          // 5) humidifying => vert pulse
-          // 6) stable => rainbow doux
-
           const float prbT = id(cheese_probe_temp).state;
           const float sp   = id(setpoint).state;
           const float band = id(alarm_band).state;
@@ -686,7 +845,7 @@ interval:
 
           if (id(freezer_fault_no_current).state) {
             auto c = id(status_led).turn_on();
-            c.set_rgb(1.0, 0.0, 1.0); // violet
+            c.set_rgb(1.0, 0.0, 1.0);
             c.set_brightness(1.0);
             c.set_effect("Strobe");
             c.perform();
@@ -716,7 +875,7 @@ interval:
 
           if (cooling && humid) {
             auto c = id(status_led).turn_on();
-            c.set_rgb(1.0, 0.0, 1.0); // magenta
+            c.set_rgb(1.0, 0.0, 1.0);
             c.set_brightness(0.6);
             c.set_effect("Pulse");
             c.perform();
@@ -725,7 +884,7 @@ interval:
 
           if (cooling) {
             auto c = id(status_led).turn_on();
-            c.set_rgb(0.0, 1.0, 1.0); // cyan
+            c.set_rgb(0.0, 1.0, 1.0);
             c.set_brightness(0.6);
             c.set_effect("Pulse");
             c.perform();
@@ -734,7 +893,7 @@ interval:
 
           if (humid) {
             auto c = id(status_led).turn_on();
-            c.set_rgb(0.0, 1.0, 0.0); // vert
+            c.set_rgb(0.0, 1.0, 0.0);
             c.set_brightness(0.6);
             c.set_effect("Pulse");
             c.perform();
@@ -745,3 +904,51 @@ interval:
           c.set_brightness(0.4);
           c.set_effect("Rainbow");
           c.perform();
+
+text_sensor:
+  - platform: template
+    name: "Cheese Debug Line"
+    id: cheese_debug_line
+    update_interval: 10s
+    lambda: |-
+      const float airT = id(cheese_room_temp).state;
+      const float airH = id(cheese_room_hum).state;
+      const float prbT = id(cheese_probe_temp).state;
+      const float sp   = id(setpoint).state;
+      const float band = id(alarm_band).state;
+
+      const bool prb_valid = !isnan(prbT);
+
+      const bool too_hot  = prb_valid && (prbT > (sp + band));
+      const bool too_cold = prb_valid && (prbT < (sp - band));
+
+      const float far_delta = id(temp_far_delta).state;
+      const float mid_delta = id(temp_mid_delta).state;
+      const float delta = prb_valid ? (prbT - sp) : 0.0f;
+
+      const char* zone = "NA";
+      if (prb_valid) {
+        if (delta > far_delta) zone = "FAR";
+        else if (delta > mid_delta) zone = "MID";
+        else zone = "NEAR";
+      }
+
+      const bool r1_on = id(relay_freezer).state;
+      const bool r2_on = id(relay_2).state;
+
+      // Air safety thresholds (affichage)
+      const float air_cut_on  = sp - id(air_safety_delta).state;
+      const float air_cut_off = air_cut_on + id(air_safety_hyst).state;
+
+      char buf[256];
+      snprintf(buf, sizeof(buf),
+        "Air=%.1fC %.0f%% | Prb=%.2fC | SP=%.2f band=%.2f | d=%.2fC/10m | zone=%s | R1=%d latch=%d (cut=%.1f/%.1f) | hot=%d cold=%d | R2=%d",
+        airT, airH,
+        prbT, sp, band,
+        id(prb_drop_c_per_10m),
+        zone,
+        r1_on ? 1 : 0, id(air_safety_latched) ? 1 : 0, air_cut_on, air_cut_off,
+        too_hot ? 1 : 0, too_cold ? 1 : 0,
+        r2_on ? 1 : 0
+      );
+      return std::string(buf);
